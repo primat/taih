@@ -1,0 +1,9 @@
+.vs
+Debug
+Release
+taih/Debug
+taih/Release
+taih.VC.db
+taih/libs/TFL_HT
+taih/libs/ue3sdk
+taih.VC.VC.opendb
