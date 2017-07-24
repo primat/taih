@@ -8,14 +8,20 @@
 #include "libs\vmthooks\vmthooks.h"
 #include "libs\ue3sdk\SDK.h"
 #include <algorithm>
+#include <unordered_map>
+
+#include <string>
+
 
 #define STR_BUF_SIZE 256
+
 
 //////
 // Configuration class
 class Config {
 
 public:
+	//bool countPostRenders;
 	bool isMenuVisible;
 	bool showXHair;
 	bool showNamePlate;
@@ -31,7 +37,7 @@ public:
 
 // Structure for caching calculated data
 struct Player {
-	APawn* target;
+	APawn* pawn;
 	FVector screenLoc;
 	FVector boundingVecs[8];
 	float screenLeft;
@@ -44,6 +50,15 @@ struct Player {
 	bool isXHairWithin2DBoundingBox;
 };
 
+
+struct Weapon {
+	float speed;
+	float maxSpeed;
+	float inheritance;
+
+	Weapon() {};
+	Weapon(float s, float m, float i) : speed { s }, maxSpeed{ m }, inheritance{ i } {};
+};
 
 /////
 // The UE3 sdk class contains utility functions over the UE3 SDK
@@ -58,9 +73,28 @@ public:
 	APlayerController*  playerCtrl;
 	Config              cfg;
 
+	// Variables used in counting the number of postRender calls per second
+	//std::chrono::time_point<std::chrono::steady_clock> start;
+	//int                 renderCtr;
+	//int                 lastRenderCtr;
+	//long long           lastSecond;
+
+	// Variables used in targetting
+	Player              target;
+	Player              *targetPtr;
+	bool                clearTargetFlag;
+	bool                acquiringTargetLock;
+	AWeapon            *currentWeapon;
+	std::string         currentWeaponName;
+	bool                isProjectileWeapon;
+
+	std::unordered_map<std::string, Weapon> weapons;
+
+	UE3Sdk::UE3Sdk();
+
 	// Utilities
 	UObject* getInstanceOf(UClass* uClass);
-	Player   prepPlayerData(APawn *target);
+	void     prepPlayerData(Player &player, APawn *target);
 
 	// Drawing methods
 	void     drawRect(float x, float y, float width, float height, FColor color);
@@ -83,9 +117,10 @@ public:
 
 	// "Enhancements"
 	void     aim();
-	void     drawBoundingBox(Player &player, APawn* aimTarget);
+	void     drawBoundingBox(Player &player, Player* aimTarget);
 	void     drawCrossHair();
-	void     drawPlayerInfo(std::list<Player> players, APawn *aimTarget);
+	void     drawPlayerInfo(std::list<Player> players, Player *aimTarget);
+	void     drawTargetInfo(Player *aimTarget);
 	void     esp(Player &player);
 
 	// Hooks

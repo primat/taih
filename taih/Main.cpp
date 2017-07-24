@@ -2,6 +2,9 @@
 
 #include "Main.h"
 #include <algorithm>
+#include <stdlib.h>
+#include <time.h>
+//#include <chrono>
 
 #define KEY_READ_DELAY 300
 
@@ -11,21 +14,19 @@
 
 App app;
 UE3Sdk sdk;
-
-APawn* currentTarget = NULL;
-bool acquiringTargetLock = false;
 WCHAR buffer[STR_BUF_SIZE];
 
 
 // Config defaults
 Config::Config() {
+	//countPostRenders = false;
 	isMenuVisible = false;
 
 	showXHair = false;
-	showNamePlate = false;
-	showHealthBar = false;
+	showNamePlate = true;
+	showHealthBar = true;
 	showHitBox = true;
-	showTrace = true;
+	showTrace = false;
 
 	enableAim = true;
 	enableEsp = true;
@@ -45,44 +46,127 @@ const FColor Color::YELLOW = Color::make(255, 255, 0, 255);
 //
 const FColor Color::make(int r, int g, int b, int a)
 {
-	FColor color; color.R = r; color.G = g; color.B = b; color.A = a;
+	FColor color;
+	color.R = r;
+	color.G = g;
+	color.B = b;
+	color.A = a;
 	return color;
 }
 
 //// UE3Sdk
-// Draws a bounding box around another game player
+UE3Sdk::UE3Sdk()
+{
+	//start = std::chrono::high_resolution_clock::now();
+	//renderCtr = 0;
+	//lastRenderCtr = 0;
+	//lastSecond = 0;
+
+	currentWeapon = NULL;
+	targetPtr = NULL;
+	clearTargetFlag = false;
+	acquiringTargetLock = false;
+	isProjectileWeapon = false;
+
+	// Set some weapon specs - used for predictive aiming
+	// Ultimately, this data should be derived from the server
+	weapons = {
+			{ "Bolt Launcher",          Weapon( 3820.0f,  8000.0f, 0.5f) },
+			{ "Light Spinfusor",        Weapon( 3920.0f,  8000.0f, 0.5f) },
+			{ "Spinfusor",              Weapon( 3920.0f,  8000.0f, 0.5f) },
+			{ "Heavy Spinfusor",        Weapon( 3920.0f,  8000.0f, 0.5f) },
+			{ "Blinksfusor",            Weapon( 3920.0f,  8000.0f, 1.0f) },
+			{ "Heavy Blinksfusor",      Weapon( 3920.0f,  8000.0f, 1.0f) },
+			{ "Light Blinksfusor",      Weapon( 3920.0f,  8000.0f, 1.0f) },
+			{ "Twinfusor",              Weapon (3920.0f,  8000.0f, 0.5f) },
+			{ "Heavy Twinfusor",        Weapon( 3920.0f,  8000.0f, 0.5f) },
+			{ "Light Twinfusor",        Weapon( 3920.0f,  8000.0f, 0.5f) },
+			{ "Grenade Launcher",       Weapon( 2700.0f,  7000.0f, 0.2f) },
+			{ "Light Grenade Launcher", Weapon( 2700.0f,  7000.0f, 0.2f) },
+			{ "Arx Buster",             Weapon( 3920.0f,  8000.0f, 0.2f) },
+			{ "Jackal",                 Weapon( 3820.0f,  1600.0f, 0.2f) },
+			{ "Thumper",                Weapon( 3520.0f,  8000.0f, 0.5f) },
+			{ "Thumper DX",             Weapon( 3520.0f,  8000.0f, 0.5f) },
+			{ "Honorfusor",             Weapon( 3920.0f,  8000.0f, 0.5f) },
+			{ "Nova Blaster",           Weapon( 8000.0f, 18000.0f, 0.2f) },
+			{ "Flak Cannon",            Weapon( 3920.0f,  8000.0f, 0.2f) },
+			{ "Assault Rifle",          Weapon(21000.0f, 21000.0f, 0.0f) },
+			{ "NJ4 SMG",                Weapon(21000.0f, 21000.0f, 0.0f) },
+			{ "NJ5-B SMG",              Weapon(21000.0f, 21000.0f, 0.0f) },
+			{ "Light Assault Rifle",    Weapon(21000.0f, 21000.0f, 0.0f) },
+			{ "X1 LMG",                 Weapon(21000.0f, 21000.0f, 0.0f) },
+			{ "Chain Gun",              Weapon(18000.0f, 18000.0f, 0.0f) },
+			{ "Falcon",                 Weapon(21000.0f, 21000.0f, 0.0f) },
+			{ "Plasma Gun",             Weapon( 3920.0f,  8000.0f, 0.5f) },
+			{ "Plasma Cannon",          Weapon( 3920.0f,  8000.0f, 0.5f) },
+			{ "Throwing Knives",        Weapon(15000.0f, 15000.0f, 0.0f) },
+	};
+}
+
+// Finds and applies the rotation necessary to aim at the current target
 void UE3Sdk::aim()
 {
-	FVector loc, targetLoc, relativeVec;
+	FVector loc, relativeVec, targetPredictLoc;
 	FRotator rot, calcAngle;
 
 	// Get the players view angle and location
+	// TODO: Test with vehicles
 	playerCtrl->Pawn->eventGetActorEyesViewPoint(&loc, &rot);
 
-	// Get the target's location
-	// Use this line for headshots
-	//targetLoc = currentTarget->Mesh->GetBoneLocation(currentTarget->Mesh->GetBoneName(Bone::HEAD), 0);
-	targetLoc = currentTarget->Location;
+	// Attempt predicitive aim with projectiles
+	if (isProjectileWeapon) {
 
-	// Getht erelative vector between localPlayer and target
-	relativeVec = playerCtrl->Subtract_VectorVector(loc, targetLoc);
+		float timeToTarget = (target.distance / (weapons[currentWeaponName].speed));
 
-	// Calculate the rotation
+		// Ping compensation
+		//if (playerCtrl->PlayerReplicationInfo->ExactPing && playerCtrl->PlayerReplicationInfo->ExactPing > 0) {
+		//	timeToTarget += playerCtrl->PlayerReplicationInfo->ExactPing;
+		//}
+
+		// Acceleration compensation
+		//FVector displacement = playerCtrl->Multiply_VectorVector(target.pawn->Acceleration, target.pawn->Velocity);
+		//displacement = playerCtrl->Add_VectorVector(displacement, target.pawn->Velocity);
+
+		// Velocity compensation
+		targetPredictLoc.X = target.pawn->Location.X + (target.pawn->Velocity.X * timeToTarget);
+		targetPredictLoc.Y = target.pawn->Location.Y + (target.pawn->Velocity.Y * timeToTarget);
+		targetPredictLoc.Z = target.pawn->Location.Z + (target.pawn->Velocity.Z * timeToTarget);
+		//targetPredictLoc = target->target->Location;
+
+		// Subtract the inheritance offset from the final position
+		FVector inheritanceOffset = playerCtrl->Multiply_FloatVector(weapons[currentWeaponName].inheritance, playerCtrl->Pawn->Velocity);
+		FVector inheritanceOffsetTimed = playerCtrl->Multiply_FloatVector(timeToTarget, inheritanceOffset);
+		targetPredictLoc = playerCtrl->Subtract_VectorVector(targetPredictLoc, inheritanceOffsetTimed);
+	}
+	else {
+		// Otherwise, use the target's current location
+		//targetPredictLoc = target->target->Mesh->GetBoneLocation(target->target->Mesh->GetBoneName(Bone::HEAD), 0);
+		targetPredictLoc = target.pawn->Location;
+	}
+
+	// Get the relative vector between localPlayer and target
+	relativeVec = playerCtrl->Subtract_VectorVector(loc, targetPredictLoc);
+
+	// Calculate the rotation 
 	calcAngle.Yaw = (int)((atan2f(relativeVec.Y, -relativeVec.X) * CONST_RadToUnrRot) * -1);
 	calcAngle.Pitch = (int)((atan2f(-relativeVec.Z, sqrtf(relativeVec.X*relativeVec.X + relativeVec.Y*relativeVec.Y))) * CONST_RadToUnrRot);
 	calcAngle.Roll = 0;
 
+	// Perform the rotation on the client
 	playerCtrl->Pawn->ClientSetRotation(calcAngle);
+
+	// Example code of how to shoot a weapon
+	//AProjectile* Projectile = (AProjectile*)playerCtrl->Pawn->Weapon->Spawn(playerCtrl->Pawn->Weapon->WeaponProjectiles.Data[0], playerCtrl->Pawn->Weapon, FName(0), FVector(), FRotator(), nullptr, 0);
 }
 
 // Draws a bounding box around another game player
-void UE3Sdk::drawBoundingBox(Player &player, APawn* aimTarget)
+void UE3Sdk::drawBoundingBox(Player &player, Player* aimTarget)
 {
 	FColor color = Color::WHITE;
 
 	if (player.hasBoundingBox) {
 
-		if (aimTarget == player.target || player.isXHairWithin2DBoundingBox) {
+		if ((aimTarget && aimTarget->pawn == player.pawn) || player.isXHairWithin2DBoundingBox) {
 			color = Color::RED;
 		}
 
@@ -115,11 +199,11 @@ void UE3Sdk::drawCrossHair()
 	canvas->Draw2DLine(canvas->ClipX / 2, canvas->ClipY / 2 - 15, canvas->ClipX / 2, canvas->ClipY / 2 + 15, Color::BLUE);
 }
 
-// Draws player info to screen, such as their 2d and screen coordinates
-void UE3Sdk::drawPlayerInfo(std::list<Player> players, APawn *aimTarget)
+// Draws player info to screen, such as their 3D and screen coordinates
+void UE3Sdk::drawPlayerInfo(std::list<Player> players, Player *aimTarget)
 {
 	WCHAR buffer[STR_BUF_SIZE];
-	float cols[5] = { 10.0f , 175.0f , 225.0f , 400.0f , 575.0f };
+	float cols[5] = { 10.0f , 175.0f , 350.0f , 525.0f };
 	float lineHeight = 15.0;
 	float yInc = 10.0;
 	int ctr = 1;
@@ -134,7 +218,7 @@ void UE3Sdk::drawPlayerInfo(std::list<Player> players, APawn *aimTarget)
 
 	for (std::list<Player>::iterator player = players.begin(); player != players.end(); ++player) {
 
-		if (player->target == aimTarget) {
+		if (aimTarget && player->pawn == aimTarget->pawn) {
 			color = Color::RED;
 		}
 		else if (player->isOnScreen) {
@@ -144,29 +228,27 @@ void UE3Sdk::drawPlayerInfo(std::list<Player> players, APawn *aimTarget)
 			color = Color::WHITE;
 		}
 
-		swprintf(buffer, STR_BUF_SIZE, L"%d %s:", ctr, player->target->PlayerReplicationInfo->PlayerName);
+		swprintf(buffer, STR_BUF_SIZE, L"%d %s:", ctr, player->pawn->PlayerReplicationInfo->PlayerName);
 		drawText(buffer, color, cols[0], yInc);
 
-		swprintf(buffer, STR_BUF_SIZE, L"%d", player->target->PlayerReplicationInfo->PlayerID);
+		swprintf(buffer, STR_BUF_SIZE, L"%0.0lf, %0.0lf, %0.0lf", player->pawn->Location.X, player->pawn->Location.Y, player->pawn->Location.Z);
 		drawText(buffer, color, cols[1], yInc);
 
-		swprintf(buffer, STR_BUF_SIZE, L"%0.0lf, %0.0lf, %0.0lf", player->target->Location.X, player->target->Location.Y, player->target->Location.Z);
+		swprintf(buffer, STR_BUF_SIZE, L"%0.0lf, %0.0lf", player->screenLoc.X, player->screenLoc.Y);
 		drawText(buffer, color, cols[2], yInc);
 
-		swprintf(buffer, STR_BUF_SIZE, L"%0.0lf, %0.0lf", player->screenLoc.X, player->screenLoc.Y);
-		drawText(buffer, color, cols[3], yInc);
-
 		swprintf(buffer, STR_BUF_SIZE, L"%0.0lf", player->distance);
-		drawText(buffer, color, cols[4], yInc);
+		drawText(buffer, color, cols[3], yInc);
 
 		yInc += lineHeight;
 	}
 
 	yInc += lineHeight;
 
-	drawText(L"Player", Color::WHITE, 10, yInc);
-	drawText(L"World Loc", Color::WHITE, 150.0f, yInc);
-	drawText(L"View Angle", Color::WHITE, 325.0f, yInc);
+	drawText(L"Player", Color::WHITE, cols[0], yInc);
+	drawText(L"World Loc", Color::WHITE, cols[1], yInc);
+	drawText(L"Acceleration", Color::WHITE, cols[2], yInc);
+	drawText(L"View Angle", Color::WHITE, cols[3], yInc);
 
 	yInc += lineHeight;
 
@@ -174,24 +256,60 @@ void UE3Sdk::drawPlayerInfo(std::list<Player> players, APawn *aimTarget)
 	swprintf(buffer, STR_BUF_SIZE, L"%s:", playerCtrl->Pawn->PlayerReplicationInfo->PlayerName);
 	drawText(buffer, Color::WHITE, cols[0], yInc);
 
-	// Player ID
-	swprintf(buffer, STR_BUF_SIZE, L"%d", playerCtrl->Pawn->PlayerReplicationInfo->PlayerID);
-	drawText(buffer, Color::WHITE, cols[1], yInc);
-
 	FVector pLoc;
 	FRotator pRot;
 	playerCtrl->Pawn->eventGetActorEyesViewPoint(&pLoc, &pRot);
-	// Doesn't work here
+	// Doesn't work in PostRender
 	//pLoc = playerCtrl->PlayerCamera->CameraCache.POV.Location;
 	//pRot = playerCtrl->PlayerCamera->CameraCache.POV.Rotation;
 
 	// Player location
 	swprintf(buffer, STR_BUF_SIZE, L"%0.0lf, %0.0lf, %0.0lf", pLoc.X, pLoc.Y, pLoc.Z);
+	drawText(buffer, Color::WHITE, cols[1], yInc);
+
+	// Player acceleration
+	swprintf(buffer, STR_BUF_SIZE, L"%0.02f, %0.02f, %0.02f", playerCtrl->Pawn->Acceleration.X, playerCtrl->Pawn->Acceleration.Y, playerCtrl->Pawn->Acceleration.Z);
 	drawText(buffer, Color::WHITE, cols[2], yInc);
 
 	// Viewing angle
 	swprintf(buffer, STR_BUF_SIZE, L"%d, %d, %d", pRot.Pitch % 360, pRot.Roll, pRot.Yaw % 360);
 	drawText(buffer, Color::WHITE, cols[3], yInc);
+}
+
+// Draws target info to screen
+void UE3Sdk::drawTargetInfo(Player *aimTarget)
+{
+	//
+	float xCur = 10.0f;
+
+	swprintf(buffer, STR_BUF_SIZE, L"Position: %0.0lf %0.0lf %0.0lf", aimTarget->pawn->Location.X, aimTarget->pawn->Location.Y, aimTarget->pawn->Location.Z);
+	drawText(buffer, Color::WHITE, xCur, 25.0f);
+
+	swprintf(buffer, STR_BUF_SIZE, L"Velocity: %0.02f %0.02f %0.02f", aimTarget->pawn->Velocity.X, aimTarget->pawn->Velocity.Y, aimTarget->pawn->Velocity.Z);
+	drawText(buffer, Color::WHITE, xCur, 40.0f);
+
+	swprintf(buffer, STR_BUF_SIZE, L"Acceleration: %0.02f %0.02f %0.02f", aimTarget->pawn->Acceleration.X, aimTarget->pawn->Acceleration.Y, aimTarget->pawn->Acceleration.Z);
+	drawText(buffer, Color::WHITE, xCur, 55.0f);
+
+	swprintf(buffer, STR_BUF_SIZE, L"Distance: %0.0lf", aimTarget->distance);
+	drawText(buffer, Color::WHITE, xCur, 70.0f);
+
+	swprintf(buffer, STR_BUF_SIZE, L"Ping: %f", playerCtrl->PlayerReplicationInfo->ExactPing);
+	drawText(buffer, Color::WHITE, xCur, 85.0f);
+
+	swprintf(buffer, STR_BUF_SIZE, L"Weapon: %s", playerCtrl->Pawn->Weapon->ItemName);
+	drawText(buffer, Color::WHITE, xCur, 100.0f);
+
+	if (isProjectileWeapon) {
+		swprintf(buffer, STR_BUF_SIZE, L"Speed: %0.01f", weapons[currentWeaponName].speed);
+		drawText(buffer, Color::WHITE, xCur, 115.0f);
+
+		swprintf(buffer, STR_BUF_SIZE, L"Max Speed: %0.01f", weapons[currentWeaponName].maxSpeed);
+		drawText(buffer, Color::WHITE, xCur, 130.0f);
+
+		swprintf(buffer, STR_BUF_SIZE, L"Inheritance: %0.02f", weapons[currentWeaponName].inheritance);
+		drawText(buffer, Color::WHITE, xCur, 145.0f);
+	}
 }
 
 // Draws a rectangle of given position, size and color
@@ -222,30 +340,30 @@ void UE3Sdk::drawText(FString text, FColor color, float X, float Y, float scaleX
 	canvas->DrawText(text, false, scaleX, scaleY, NULL);
 }
 
-//
+// Shows given player on screen, regardless if they are in FOV or not
 void UE3Sdk::esp(Player &player)
 {
-	if (isEnemy(playerCtrl->Pawn, player.target)) {
+	if (isEnemy(playerCtrl->Pawn, player.pawn)) {
 
-		// Name plates
+		// Name plate
 		if (cfg.showNamePlate) {
-			drawShadowedText(player.target->PlayerReplicationInfo->PlayerName, Color::RED, player.screenLoc.X - (textWidth(player.target->PlayerReplicationInfo->PlayerName) / 2), player.screenLoc.Y);
+			drawShadowedText(player.pawn->PlayerReplicationInfo->PlayerName, Color::RED, player.screenLoc.X - (textWidth(player.pawn->PlayerReplicationInfo->PlayerName) / 2), player.screenTop - 25.0f);
 		}
 
-		// Trace to player
+		// Trace line to player
 		if (cfg.showTrace) {
 			drawRect(player.screenLoc.X - 1.0f, player.screenLoc.Y - 1.0f, 3.0f, 3.0f, Color::RED);
 			canvas->Draw2DLine(canvas->ClipX / 2, canvas->ClipY, player.screenLoc.X, player.screenLoc.Y, Color::GRAY);
 		}
 
-		// Health bars
+		// Health bar
 		if (cfg.showHealthBar) {
-			drawRect(player.screenLoc.X - 50.f, player.screenLoc.Y + 10.0f, 100.0f * player.target->Health / player.target->HealthMax, 5.0f, Color::RED);
+			drawRect(player.screenLoc.X - 50.f, player.screenTop - 10.0f, 100.0f * player.pawn->Health / player.pawn->HealthMax, 5.0f, Color::RED);
 		}
 
-		// Hitboxes
-		if (cfg.showHitBox && isEnemy(playerCtrl->Pawn, player.target)) {
-			drawBoundingBox(player, currentTarget);
+		// Hit box
+		if (cfg.showHitBox) {
+			drawBoundingBox(player, targetPtr);
 		}
 	}
 }
@@ -323,20 +441,6 @@ void UE3Sdk::normalize(FVector &v)
 	}
 }
 
-//
-FVector inline RotationToVector(FRotator Rotation) {
-	FVector Vector;
-	float fYaw = Rotation.Yaw * (float)CONST_UnrRotToRad;
-	float fPitch = Rotation.Pitch * (float)CONST_UnrRotToRad;
-	float fCosPitch = cos(fPitch);
-
-	Vector.X = cos(fYaw) * fCosPitch;
-	Vector.Y = sin(fYaw) * fCosPitch;
-	Vector.Z = sin(fPitch);
-
-	return Vector;
-}
-
 // Post render hook
 void UE3Sdk::postRender(UCanvas* uCanvas)
 {
@@ -345,60 +449,101 @@ void UE3Sdk::postRender(UCanvas* uCanvas)
 	playerCtrl = engine->GamePlayers.Data[0]->Actor;
 	if (!playerCtrl) { return; }
 
-	if (!uCanvas) { return; }
+	if (!uCanvas || !isGameStarted()) { return; }
 	canvas = uCanvas;
 
-	// If the game is not started, don't do anything
-	if (!isGameStarted()) {
-		currentTarget = NULL;
-		acquiringTargetLock = false;
+	// Draw the number of postrenders per second. This should be around 60.
+	//if (cfg.countPostRenders) {
+	//	auto elapsed = std::chrono::high_resolution_clock::now() - start;
+	//	long long thisSecond = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+	//	if (lastSecond != thisSecond) {
+	//		lastRenderCtr = renderCtr;
+	//		lastSecond = thisSecond;
+	//		renderCtr = 1;
+	//	}
+	//	else {
+	//		renderCtr++;
+	//	}
+	//	swprintf(buffer, STR_BUF_SIZE, L"PRPS: %d", lastRenderCtr);
+	//	drawText(buffer, Color::WHITE, canvas->ClipX - 350, 10);
+	//}
+
+	// Set current weapon values if the weapon changed since the last render
+	if (playerCtrl->Pawn->Weapon != NULL && playerCtrl->Pawn->Weapon != currentWeapon) {
+		currentWeapon = playerCtrl->Pawn->Weapon;
+		wchar_t weaponNameChar[32];
+		swprintf(weaponNameChar, 32, L"%s", playerCtrl->Pawn->Weapon->ItemName);
+		std::wstring ws(weaponNameChar);
+		std::string weaponName(ws.begin(), ws.end());
+		currentWeaponName = weaponName;
+		std::unordered_map<std::string, Weapon>::const_iterator weaponsIt = weapons.find(weaponName);
+		isProjectileWeapon = (weaponsIt != weapons.end());
 	}
 
-	// Deselect aim target if we're dead
-	if (currentTarget != NULL && playerCtrl->Pawn->Health < 1) {
-		currentTarget = NULL;
+	// Check if the current target has been unselected
+	if (clearTargetFlag && targetPtr != NULL || playerCtrl->Pawn->Health < 1) {
+		targetPtr = NULL;
+		clearTargetFlag = false;
 	}
 
 	// 
 	if (playerCtrl->Pawn && playerCtrl->Pawn->Health > 0 && playerCtrl->Pawn->PlayerReplicationInfo
 		&& playerCtrl->Pawn->PlayerReplicationInfo->Team && playerCtrl->Pawn->WorldInfo) {
 
-		//if (cfg.showXHair) {
-		//	drawCrossHair();
-		//}
+		if (cfg.showXHair) {
+			drawCrossHair();
+		}
 
 		std::list<Player> players;
-		APawn* target = (APawn*)playerCtrl->Pawn->WorldInfo->PawnList;
+		APawn* pawn = (APawn*)playerCtrl->Pawn->WorldInfo->PawnList;
+		bool targetExists = false;
 
-		// Loop through list of other players, gather some data and execute some enhancements
-		while (target != NULL) {
+		// Loop through list of other players, gather some data and sync the current target, if there is one
+		while (pawn != NULL) {
 
-			if (isGamePlayer(target) && isEnemy(playerCtrl->Pawn, target)) {
+			if (isGamePlayer(pawn) && isEnemy(playerCtrl->Pawn, pawn)) {
 
-				Player player = prepPlayerData(target);
+				Player player;
+				prepPlayerData(player, pawn);
 				players.push_back(player);
 
 				// Run enhancements
-				if (target->Health > 0) {
-
-					esp(player);
+				if (pawn->Health > 0) {
 
 					if (acquiringTargetLock && player.isXHairWithin2DBoundingBox) {
-						currentTarget = player.target;
+						target = player;
+						targetPtr = &target;
+						clearTargetFlag = false;
 						acquiringTargetLock = false;
+						targetExists = true;
 					}
+
+					esp(player);
+				}
+
+				// Make sure our target is still in the game
+				if (!targetExists && targetPtr != NULL && target.pawn == pawn) {
+					targetExists = true;
+					target = player;
+					targetPtr = &target;
 				}
 			}
+			
+			pawn = pawn->NextPawn;
+		}
 
-			target = target->NextPawn;
+		if (!targetExists) {
+			targetPtr = NULL;
 		}
 
 		// Aim enhancement
-		if (currentTarget != NULL) {
+		if (targetPtr != NULL) {
+
+			drawTargetInfo(targetPtr);
 
 			// Stop aiming at dead players
-			if (currentTarget->Health < 1) {
-				currentTarget = NULL;
+			if (target.pawn && target.pawn->Health < 1) {
+				targetPtr = NULL;
 			}
 			else {
 				aim();
@@ -409,30 +554,33 @@ void UE3Sdk::postRender(UCanvas* uCanvas)
 		if (acquiringTargetLock) {
 			drawText(L"Target Lock: acquiring", Color::YELLOW, canvas->ClipX - 150, 10);
 		}
-		else if (currentTarget != NULL && currentTarget->PlayerReplicationInfo) {
-			swprintf(buffer, STR_BUF_SIZE, L"Target Lock: %s", currentTarget->PlayerReplicationInfo->PlayerName);
+		else if (targetPtr != NULL && target.pawn->PlayerReplicationInfo) {
+			swprintf(buffer, STR_BUF_SIZE, L"Target Lock: %s", target.pawn->PlayerReplicationInfo->PlayerName);
 			drawText(buffer, Color::GREEN, canvas->ClipX - 250, 10);
 		}
 		else {
 			drawText(L"Target Lock: inactive", Color::WHITE, canvas->ClipX - 150, 10);
 		}
 
-		//drawPlayerInfo(players, currentTarget);
+		//drawPlayerInfo(players, targetPtr);
+	}
+	// Player isn't in game -> deselect the current target if there's one selected
+	else if (targetPtr != NULL) {
+		targetPtr = NULL;
 	}
 }
 
 // Set player calculated data
-Player UE3Sdk::prepPlayerData(APawn *target) {
-
-	Player player;
+void UE3Sdk::prepPlayerData(Player &player, APawn *target)
+{
 	FVector minVec, maxVec, vec[8];
 	FBox box;
 
-	player.target = target;
+	player.pawn = target;
 	player.screenLoc = worldToScreen(target->Mesh->GetBoneLocation(target->Mesh->GetBoneName(Bone::HEAD), 0));
 
 	// Get bounding boxes
-	player.target->GetComponentsBoundingBox(&box);
+	player.pawn->GetComponentsBoundingBox(&box);
 
 	if (box.IsValid) {
 		player.hasBoundingBox = true;
@@ -504,8 +652,6 @@ Player UE3Sdk::prepPlayerData(APawn *target) {
 
 	// Get the distance from this target to localPlayer
 	player.distance = magnitude(playerCtrl->Subtract_VectorVector(target->Location, playerCtrl->Pawn->Location));
-
-	return player;
 }
 
 //
@@ -523,7 +669,7 @@ FVector UE3Sdk::rotationToVector(FRotator r)
 	return Vec;
 }
 
-//
+// Gets the magnitude of a vector
 float UE3Sdk::magnitude(FVector &v)
 {
 	return playerCtrl->Sqrt(v.X*v.X + v.Y*v.Y + v.Z*v.Z);
@@ -545,7 +691,7 @@ float UE3Sdk::textWidth(FString str)
 	return X;
 }
 
-//
+// Maps object coordinates from 3D (world) to 2D (screen)
 FVector UE3Sdk::worldToScreen(FVector Location)
 {
 	FVector Return;
@@ -664,22 +810,24 @@ DWORD WINAPI OnAttach(LPVOID lpParam)
 DWORD WINAPI Hotkeys(LPVOID lpParam)
 {
 	while (true) {
+
 		Sleep(KEY_READ_DELAY);
+
 		if (GetAsyncKeyState(VK_LSHIFT)) {
 
-			// If currently looking for a target, stop
-			if (acquiringTargetLock) {
-				acquiringTargetLock = false;
-				currentTarget = NULL;
+			// If trying to acquire a target...
+			if (sdk.acquiringTargetLock) {
+				sdk.acquiringTargetLock = false;
+				sdk.clearTargetFlag = true;
 			}
 			// If currently locked on a target, untarget
-			else if (currentTarget != NULL) {
-				acquiringTargetLock = false;
-				currentTarget = NULL;
+			else if (sdk.targetPtr != NULL) {
+				sdk.acquiringTargetLock = false;
+				sdk.clearTargetFlag = true;
 			}
 			// Try to get a target lock
 			else {
-				acquiringTargetLock = true;
+				sdk.acquiringTargetLock = true;
 			}
 		}
 	}
@@ -691,6 +839,8 @@ DWORD WINAPI Hotkeys(LPVOID lpParam)
 // Create another thread to intercept keyboard events.
 BOOL WINAPI DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpReserved)
 {
+	srand((unsigned)time(NULL));
+
 	if (dwReason == DLL_PROCESS_ATTACH) {
 		CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)OnAttach, &hModule, 0, NULL);
 		CreateThread(NULL, 0, &Hotkeys, &hModule, 0, NULL);
